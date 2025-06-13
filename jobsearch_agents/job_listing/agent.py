@@ -2,7 +2,8 @@ import asyncio
 import os
 from dotenv import load_dotenv
 from google.adk.agents import Agent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, SseServerParams
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_toolset import StreamableHTTPServerParams
 from google.adk.tools.agent_tool import AgentTool
 from contextlib import AsyncExitStack
 from . import prompt
@@ -29,7 +30,7 @@ async def create_agent():
     
     # MCPToolset with proper timeout settings
     tools = MCPToolset(
-        connection_params=SseServerParams(
+        connection_params=StreamableHTTPServerParams(
             url='https://gethired-mcp.onrender.com/jobsearch-mcp',
             timeout=MCP_TIMEOUT,  # Connection timeout
             sse_read_timeout=MCP_TIMEOUT * 5  # SSE read timeout (5x connection timeout)
