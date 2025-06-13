@@ -15,7 +15,7 @@ async def create_agent():
     # MCPToolset is NOT awaitable - instantiate directly
     tools = MCPToolset(
         connection_params=SseServerParams(
-            url='https://gethired-mcp.onrender.com/jobsearch-mcp/',
+            url='https://gethired-mcp.onrender.com/jobsearch-mcp',
         ),
         tool_filter=[
             # Company Research Tools

@@ -30,7 +30,7 @@ async def create_agent():
     # MCPToolset with proper timeout settings
     tools = MCPToolset(
         connection_params=SseServerParams(
-            url='https://gethired-mcp.onrender.com/jobsearch-mcp/',
+            url='https://gethired-mcp.onrender.com/jobsearch-mcp',
             timeout=MCP_TIMEOUT,  # Connection timeout
             sse_read_timeout=MCP_TIMEOUT * 5  # SSE read timeout (5x connection timeout)
         ),
