@@ -13,46 +13,36 @@ os.environ['MCP_CLIENT_TIMEOUT'] = '60.0'
 
 # Monkey patch the MCP session timeout
 try:
-    # Patch the timedelta import in mcp_session_manager
     from datetime import timedelta as original_timedelta
-    
-    # Create a custom timedelta that defaults to 60 seconds
     class PatchedTimedelta(original_timedelta):
         def __new__(cls, seconds=60, **kwargs):
-            if seconds == 5:  # Override the hardcoded 5 second timeout
+            if seconds == 5:
                 seconds = float(os.getenv('MCP_CLIENT_TIMEOUT', '60.0'))
             return super().__new__(cls, seconds=seconds, **kwargs)
-    
-    # Replace timedelta in the mcp module before it's imported
     sys.modules['datetime'].timedelta = PatchedTimedelta
-    
 except Exception as e:
     print(f"Warning: Could not patch MCP timeout: {e}", file=sys.stderr)
 
 import logging
 import argparse
 import uvicorn
-import asyncio 
-from contextlib import AsyncExitStack 
+import asyncio
+from contextlib import AsyncExitStack
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-
+# Load environment variables
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
-load_status = load_dotenv(dotenv_path=dotenv_path, override=True)
+load_dotenv(dotenv_path=dotenv_path, override=True)
 
-api_key=os.getenv("GOOGLE_API_KEY")
-# Use relative imports within the agent package
-from .task_manager import TaskManager 
-from .agent import root_agent 
-from common.a2a_server import AgentRequest, AgentResponse, create_agent_server 
- 
+from .task_manager import TaskManager
+from .agent import root_agent
+from common.a2a_server import create_agent_server
+
 # Constants
-DEFAULT_AGENT_TIMEOUT = 60.0  # 60 seconds default timeout
+default_timeout = 60.0
 
-# Configure logging
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -60,23 +50,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-
-# Global variable for the TaskManager instance
-task_manager_instance: TaskManager | None = None
-
 def parse_args():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Start the Speaker Agent server")
     parser.add_argument(
-        "--host", 
-        type=str, 
+        "--host",
+        type=str,
         default=os.getenv("SPEAKER_HOST", "0.0.0.0"),
         help="Host to bind the server to"
     )
     parser.add_argument(
-        "--port", 
-        type=int, 
+        "--port",
+        type=int,
         default=int(os.getenv("SPEAKER_PORT", "8003")),
         help="Port to bind the server to"
     )
@@ -89,126 +73,73 @@ def parse_args():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=float(os.getenv("SPEAKER_AGENT_TIMEOUT", DEFAULT_AGENT_TIMEOUT)),
-        help="Timeout for agent operations in seconds (default: 60.0)"
+        default=float(os.getenv("SPEAKER_AGENT_TIMEOUT", default_timeout)),
+        help="Timeout for agent operations in seconds"
     )
-    # Arguments related to TaskManager are handled via env vars now
     return parser.parse_args()
 
-def add_cors_middleware(app: FastAPI):
-    """Add CORS middleware to the FastAPI app."""
-    # Configure CORS origins - add your React dev server URLs
-    origins = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "*"
-        # Add any other origins you need
-    ]
-    
-    # You can also use ["*"] to allow all origins in development
-    # origins = ["*"]
-    
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
-    logger.info(f"CORS middleware added with origins: {origins}")
-
-async def main(): # Make main async
-    """Initialize and start the Speaker Agent server."""
-    global task_manager_instance
-    
-    # Parse command line arguments
+async def main():
     args = parse_args()
-    
-    # Set logging level based on argument
+
+    # Apply log level
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
-    
     logger.info("Starting Speaker Agent A2A Server initialization...")
     logger.info(f"Agent timeout set to: {args.timeout} seconds")
-    
-    # Await the root_agent coroutine to get the actual agent and exit_stack
-    logger.info("Awaiting root_agent creation...")
+
+    # Instantiate agent and exit stack
     agent_instance, exit_stack = await root_agent
     logger.info(f"Agent instance created: {agent_instance.name}")
 
-    # Use the exit_stack to manage the MCP connection lifecycle
     async with exit_stack:
-        logger.info("MCP exit_stack entered.")
-        
-        # Initialize the TaskManager with the resolved agent instance and timeout
-        # Check if TaskManager accepts timeout parameter
+        # Initialize TaskManager
         try:
-            task_manager_instance = TaskManager(agent=agent_instance, timeout=args.timeout)
-            logger.info(f"TaskManager initialized with agent instance and {args.timeout}s timeout.")
+            tm = TaskManager(agent=agent_instance, timeout=args.timeout)
         except TypeError:
-            # If TaskManager doesn't accept timeout parameter, use default initialization
-            task_manager_instance = TaskManager(agent=agent_instance)
-            logger.info("TaskManager initialized with agent instance (timeout parameter not supported).")
-            # Set timeout as an attribute if possible
-            if hasattr(task_manager_instance, 'timeout'):
-                task_manager_instance.timeout = args.timeout
-                logger.info(f"TaskManager timeout set to {args.timeout}s via attribute.")
-
-        # Configuration for the A2A server
-        # Use environment variables or defaults
-        host = os.getenv("SPEAKER_A2A_HOST", "127.0.0.1")
-        port = int(os.getenv("SPEAKER_A2A_PORT", 8003))
+            tm = TaskManager(agent=agent_instance)
+            if hasattr(tm, 'timeout'):
+                tm.timeout = args.timeout
         
-        # Create the FastAPI app using the helper
-        # Pass the agent name, description, and the task manager instance
-        # Check if create_agent_server accepts timeout parameter
+        # Determine bind address
+        host = args.host
+        port = int(os.getenv('PORT', args.port))
+
+        # Create FastAPI app
         try:
             app = create_agent_server(
                 name=agent_instance.name,
                 description=agent_instance.description,
-                task_manager=task_manager_instance,
+                task_manager=tm,
                 timeout=args.timeout
             )
         except TypeError:
-            # If create_agent_server doesn't accept timeout parameter, use default
             app = create_agent_server(
                 name=agent_instance.name,
                 description=agent_instance.description,
-                task_manager=task_manager_instance
+                task_manager=tm
             )
-            logger.info("create_agent_server called without timeout parameter.")
-        
-        # Add CORS middleware to the app
-        add_cors_middleware(app)
-        
+
+        # Add CORS
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
         logger.info(f"Speaker Agent A2A server starting on {host}:{port}")
-        
-        # Configure uvicorn
         config = uvicorn.Config(app, host=host, port=port, log_level=args.log_level)
         server = uvicorn.Server(config)
-        
-        # Run the server
         await server.serve()
-        
-        # This part will be reached after the server is stopped (e.g., Ctrl+C)
-        logger.info("Speaker Agent A2A server stopped.")
 
 if __name__ == "__main__":
     try:
-        # Set asyncio timeout if needed
-        # This affects all asyncio operations unless they specify their own timeout
         if os.getenv("ASYNCIO_TIMEOUT"):
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-        
-        # Run the async main function
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Speaker Agent server stopped by user.")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"Error during server startup: {str(e)}", exc_info=True)
+        logger.error(f"Error during server startup: {e}", exc_info=True)
         sys.exit(1)
