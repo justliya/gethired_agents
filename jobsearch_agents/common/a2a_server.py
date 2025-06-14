@@ -3,7 +3,6 @@ Standardized Agent to Agent (A2A) server implementation following Google ADK sta
 This module provides a FastAPI server implementation for agent-to-agent communication.
 """
 
-
 import os
 import json
 import inspect
@@ -11,10 +10,7 @@ from typing import Dict, Any, Callable, Optional, List
 
 from fastapi import FastAPI, Body, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-
-from fastapi import FastAPI, Body
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 class AgentRequest(BaseModel):
@@ -51,6 +47,15 @@ def create_agent_server(
         A configured FastAPI application
     """
     app = FastAPI(title=f"{name} Agent", description=description)
+    
+    # Add CORS middleware - IMPORTANT: This must be added before routes
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # In production, specify your frontend domains
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
     
     # Create .well-known directory if it doesn't exist
     if well_known_path is None:
@@ -103,9 +108,25 @@ def create_agent_server(
         with open(agent_json_path, "r") as f:
             return JSONResponse(content=json.load(f))
     
+    # Health check endpoint
+    @app.get("/health")
+    async def health_check():
+        """Health check endpoint."""
+        return {"status": "healthy", "service": name}
+    
+    # Explicit OPTIONS handler for preflight requests
+    @app.options("/run")
+    async def options_run():
+        """Handle preflight OPTIONS requests for /run endpoint."""
+        return JSONResponse(content={}, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        })
+    
     # Register additional endpoints if provided
     if endpoints:
         for path, handler in endpoints.items():
             app.add_api_route(f"/{path}", handler, methods=["POST"])
     
-    return app 
+    return app

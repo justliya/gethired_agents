@@ -29,7 +29,6 @@ import uvicorn
 import asyncio
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
-from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
@@ -103,7 +102,7 @@ async def main():
         host = args.host
         port = int(os.getenv('PORT', args.port))
 
-        # Create FastAPI app
+        # Create FastAPI app (CORS is now handled in create_agent_server)
         try:
             app = create_agent_server(
                 name=agent_instance.name,
@@ -117,15 +116,6 @@ async def main():
                 description=agent_instance.description,
                 task_manager=tm
             )
-
-        # Add CORS
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
 
         logger.info(f"Speaker Agent A2A server starting on {host}:{port}")
         config = uvicorn.Config(app, host=host, port=port, log_level=args.log_level)
