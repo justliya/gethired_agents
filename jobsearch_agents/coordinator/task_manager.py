@@ -102,50 +102,86 @@ class TaskManager:
             # Run the agent with timeout
             logger.info(f"Running agent with timeout: {self.timeout}s")
             
-            # Create a coroutine to process all events
-            async def process_events():
-                final_message = "(No response generated)"
-                raw_events = []
-                
-                # Process events
-                async for event in self.runner.run_async(
+            # Process events with proper async generator handling
+            final_message = "(No response generated)"
+            raw_events = []
+            runner_generator = None
+            
+            try:
+                # Create the async generator
+                runner_generator = self.runner.run_async(
                     user_id=user_id, 
                     session_id=session_id, 
                     new_message=request_content
-                ):
-                    raw_events.append(event.model_dump(exclude_none=True))
-                    
-                    # Only extract from the final response
-                    if event.is_final_response() and event.content and event.content.role == "model":
-                        if event.content.parts and event.content.parts[0].text:
-                            final_message = event.content.parts[0].text
-                            logger.info(f"Final response: {final_message}")
+                )
                 
-                return final_message, raw_events
-            
-            # Apply timeout to the entire event processing
-            try:
-                final_message, raw_events = await asyncio.wait_for(
-                    process_events(),
+                # Create a task to process events with timeout
+                async def process_events_with_timeout():
+                    nonlocal final_message, raw_events
+                    
+                    try:
+                        async for event in runner_generator:
+                            raw_events.append(event.model_dump(exclude_none=True))
+                            
+                            # Only extract from the final response
+                            if event.is_final_response() and event.content and event.content.role == "model":
+                                if event.content.parts and event.content.parts[0].text:
+                                    final_message = event.content.parts[0].text
+                                    logger.info(f"Final response: {final_message}")
+                    except asyncio.CancelledError:
+                        logger.info("Event processing was cancelled")
+                        raise
+                    except Exception as e:
+                        logger.error(f"Error processing events: {e}")
+                        raise
+                
+                # Apply timeout to the event processing
+                await asyncio.wait_for(
+                    process_events_with_timeout(),
                     timeout=self.timeout
                 )
                 
-                # Return formatted response
-                return {
-                    "message": final_message, 
-                    "status": "success",
-                    "data": {
-                        "raw_events": raw_events[-3:] if raw_events else []
-                    }
-                }
-                
             except asyncio.TimeoutError:
                 logger.error(f"Agent execution timed out after {self.timeout} seconds")
+                # Clean up the generator if it exists
+                if runner_generator is not None:
+                    try:
+                        await runner_generator.aclose()
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error cleaning up generator: {cleanup_error}")
+                
                 return {
                     "message": f"Request timed out after {self.timeout} seconds. Please try again with a simpler query.",
                     "status": "error",
                     "data": {"error_type": "TimeoutError", "timeout": self.timeout}
                 }
+            
+            except asyncio.CancelledError:
+                logger.info("Task was cancelled")
+                # Clean up the generator if it exists
+                if runner_generator is not None:
+                    try:
+                        await runner_generator.aclose()
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error cleaning up generator: {cleanup_error}")
+                raise
+            
+            finally:
+                # Ensure generator is properly closed
+                if runner_generator is not None:
+                    try:
+                        await runner_generator.aclose()
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error in final cleanup: {cleanup_error}")
+                
+            # Return formatted response
+            return {
+                "message": final_message, 
+                "status": "success",
+                "data": {
+                    "raw_events": raw_events[-3:] if raw_events else []
+                }
+            }
 
         except Exception as e:
             logger.error(f"Error running agent: {str(e)}", exc_info=True)

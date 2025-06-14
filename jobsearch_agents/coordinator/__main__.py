@@ -27,6 +27,7 @@ import logging
 import argparse
 import uvicorn
 import asyncio
+import signal
 from contextlib import AsyncExitStack
 from dotenv import load_dotenv
 
@@ -85,42 +86,85 @@ async def main():
     logger.info("Starting Speaker Agent A2A Server initialization...")
     logger.info(f"Agent timeout set to: {args.timeout} seconds")
 
-    # Instantiate agent and exit stack
-    agent_instance, exit_stack = await root_agent
-    logger.info(f"Agent instance created: {agent_instance.name}")
+    # Track running tasks for cleanup
+    running_tasks = set()
+    
+    def add_task(task):
+        running_tasks.add(task)
+        task.add_done_callback(running_tasks.discard)
+    
+    # Signal handler for graceful shutdown
+    def signal_handler():
+        logger.info("Received shutdown signal, cleaning up tasks...")
+        for task in running_tasks:
+            if not task.done():
+                task.cancel()
+    
+    # Set up signal handlers
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, signal_handler)
+    except NotImplementedError:
+        # Windows doesn't support add_signal_handler
+        pass
 
-    async with exit_stack:
-        # Initialize TaskManager
-        try:
-            tm = TaskManager(agent=agent_instance, timeout=args.timeout)
-        except TypeError:
-            tm = TaskManager(agent=agent_instance)
-            if hasattr(tm, 'timeout'):
-                tm.timeout = args.timeout
-        
-        # Determine bind address
-        host = args.host
-        port = int(os.getenv('PORT', args.port))
+    try:
+        # Instantiate agent and exit stack
+        agent_instance, exit_stack = await root_agent
+        logger.info(f"Agent instance created: {agent_instance.name}")
 
-        # Create FastAPI app (CORS is now handled in create_agent_server)
-        try:
-            app = create_agent_server(
-                name=agent_instance.name,
-                description=agent_instance.description,
-                task_manager=tm,
-                timeout=args.timeout
-            )
-        except TypeError:
-            app = create_agent_server(
-                name=agent_instance.name,
-                description=agent_instance.description,
-                task_manager=tm
-            )
+        async with exit_stack:
+            # Initialize TaskManager
+            try:
+                tm = TaskManager(agent=agent_instance, timeout=args.timeout)
+            except TypeError:
+                tm = TaskManager(agent=agent_instance)
+                if hasattr(tm, 'timeout'):
+                    tm.timeout = args.timeout
+            
+            # Determine bind address
+            host = args.host
+            port = int(os.getenv('PORT', args.port))
 
-        logger.info(f"Speaker Agent A2A server starting on {host}:{port}")
-        config = uvicorn.Config(app, host=host, port=port, log_level=args.log_level)
-        server = uvicorn.Server(config)
-        await server.serve()
+            # Create FastAPI app (CORS is now handled in create_agent_server)
+            try:
+                app = create_agent_server(
+                    name=agent_instance.name,
+                    description=agent_instance.description,
+                    task_manager=tm,
+                    timeout=args.timeout
+                )
+            except TypeError:
+                app = create_agent_server(
+                    name=agent_instance.name,
+                    description=agent_instance.description,
+                    task_manager=tm
+                )
+
+            logger.info(f"Speaker Agent A2A server starting on {host}:{port}")
+            config = uvicorn.Config(app, host=host, port=port, log_level=args.log_level)
+            server = uvicorn.Server(config)
+            
+            # Start server as a task
+            server_task = asyncio.create_task(server.serve())
+            add_task(server_task)
+            
+            try:
+                await server_task
+            except asyncio.CancelledError:
+                logger.info("Server task was cancelled")
+                
+    except asyncio.CancelledError:
+        logger.info("Main task was cancelled")
+    except Exception as e:
+        logger.error(f"Error during server execution: {e}", exc_info=True)
+        raise
+    finally:
+        # Clean up any remaining tasks
+        if running_tasks:
+            logger.info(f"Cleaning up {len(running_tasks)} remaining tasks...")
+            await asyncio.gather(*running_tasks, return_exceptions=True)
 
 if __name__ == "__main__":
     try:
