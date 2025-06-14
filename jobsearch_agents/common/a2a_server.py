@@ -119,7 +119,7 @@ def create_agent_server(
     async def options_run():
         """Handle preflight OPTIONS requests for /run endpoint."""
         return JSONResponse(content={}, headers={
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": "http://localhost:5174",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
             "Access-Control-Allow-Headers": "*",
         })
