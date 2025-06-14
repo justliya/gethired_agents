@@ -118,8 +118,7 @@ jobs:
           --region $REGION \
           --allow-unauthenticated \
           --set-env-vars="GOOGLE_CLOUD_LOCATION=$REGION,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_GENAI_USE_VERTEXAI=true,SPEAKER_HOST=0.0.0.0,FIREBASE_STORAGE_BUCKET=gethired-6c623.firebasestorage.app,LOG_LEVEL=info,SPEAKER_AGENT_TIMEOUT=60" \
-          --set-secrets="/secrets/firebase/key=firebase-service-account-key:latest" \
-          --set-secrets="/secrets/google/key=google-application-credentials:latest" \
+          --set-secrets="/secrets/firebase/key=firebase-service-account-key:latest,/secrets/google/key=google-application-credentials:latest" \
           --memory=2Gi \
           --cpu=2 \
           --timeout=900 \
