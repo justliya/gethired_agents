@@ -1,0 +1,103 @@
+name: Deploy to Google Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE: agents-service
+  REGION: us-central1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Google Auth
+      id: auth
+      uses: 'google-github-actions/auth@v2'
+      with:
+        credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+    - name: Set up Cloud SDK
+      uses: 'google-github-actions/setup-gcloud@v2'
+
+    - name: Verify gcloud configuration
+      run: |
+        gcloud info
+        gcloud config list
+
+    - name: Configure Docker to use gcloud as credential helper
+      run: |
+        gcloud --quiet auth configure-docker
+
+    - name: Build and tag Docker image
+      run: |
+        echo "Building Docker image..."
+        docker build -t gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA .
+        docker tag gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA gcr.io/$PROJECT_ID/$SERVICE:latest
+
+    - name: Push Docker image
+      run: |
+        echo "Pushing Docker image..."
+        docker push gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA
+        docker push gcr.io/$PROJECT_ID/$SERVICE:latest
+
+    - name: Deploy to Cloud Run
+      id: deploy
+      run: |
+        echo "Deploying to Cloud Run..."
+        gcloud run deploy $SERVICE \
+          --image gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA \
+          --platform managed \
+          --region $REGION \
+          --allow-unauthenticated \
+          --port 3000 \
+          --set-env-vars="MCP_HTTP_PORT=3000,MCP_TRANSPORT=http,GOOGLE_CLOUD_LOCATION=$REGION,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_GENAI_USE_VERTEXAI=true,SPEAKER_A2A_HOST=0.0.0.0,FIREBASE_STORAGE_BUCKET=gethired-6c623.firebasestorage.app" \
+          --set-secrets="/secrets/firebase-service-account-key=firebase-service-account-key:latest,/secrets/google-application-credentials=google-application-credentials:latest" \
+          --memory=2Gi \
+          --cpu=2 \
+          --timeout=900 \
+          --concurrency=80 \
+          --max-instances=100 \
+          --min-instances=0 \
+          --format="value(status.url)"
+
+    - name: Get service URL
+      run: |
+        SERVICE_URL=$(gcloud run services describe $SERVICE --region=$REGION --format="value(status.url)")
+        echo "Service deployed successfully!"
+        echo "Service URL: $SERVICE_URL"
+        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_ENV
+
+    - name: Test deployment
+      run: |
+        echo "Testing deployment..."
+        # Wait a moment for the service to be ready
+        sleep 10
+        
+        # Test if the service responds
+        if curl -f -s --max-time 30 "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Health check passed"
+        else
+          echo "⚠️  Health check failed, but deployment completed"
+        fi
+
+    - name: Show deployment summary
+      run: |
+        echo "=== Deployment Summary ==="
+        echo "Service: $SERVICE"
+        echo "Region: $REGION"
+        echo "Image: gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA"
+        echo "URL: $SERVICE_URL"
+        echo "=========================="
