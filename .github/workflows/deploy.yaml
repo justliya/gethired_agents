@@ -53,60 +53,7 @@ jobs:
         docker push gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA
         docker push gcr.io/$PROJECT_ID/$SERVICE:latest
 
-    name: Deploy to Google Cloud Run
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  SERVICE: agents-service
-  REGION: us-central1
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Google Auth
-      id: auth
-      uses: 'google-github-actions/auth@v2'
-      with:
-        credentials_json: '${{ secrets.GCP_SA_KEY }}'
-
-    - name: Set up Cloud SDK
-      uses: 'google-github-actions/setup-gcloud@v2'
-
-    - name: Verify gcloud configuration
-      run: |
-        gcloud info
-        gcloud config list
-
-    - name: Configure Docker to use gcloud as credential helper
-      run: |
-        gcloud --quiet auth configure-docker
-
-    - name: Build and tag Docker image
-      run: |
-        echo "Building Docker image..."
-        docker build -t gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA .
-        docker tag gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA gcr.io/$PROJECT_ID/$SERVICE:latest
-
-    - name: Push Docker image
-      run: |
-        echo "Pushing Docker image..."
-        docker push gcr.io/$PROJECT_ID/$SERVICE:$GITHUB_SHA
-        docker push gcr.io/$PROJECT_ID/$SERVICE:latest
+   
 
     - name: Deploy to Cloud Run
       id: deploy
