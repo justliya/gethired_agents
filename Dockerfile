@@ -95,7 +95,7 @@ MCP_HTTP_PORT=8001 npx @gannonh/firebase-mcp &\n\
 MCP_PID=$!\n\
 \n\
 # Start coordinator on internal port\n\
-python3 -m coordinator --port 8003 --host 0.0.0.0 &\n\
+python3 -m jobsearch_agents.coordinator --port 8003 --host 0.0.0.0 &\n\
 COORD_PID=$!\n\
 \n\
 # Wait for any process to exit\n\
