@@ -24,9 +24,15 @@ RUN npm install -g @gannonh/firebase-mcp
 # Copy Python requirements if exists
 COPY requirements.txt* ./
 
-# Install Python dependencies if requirements.txt exists
-RUN if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
+# Create and activate virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
+# Upgrade pip in virtual environment
+RUN pip install --upgrade pip
+
+# Install Python dependencies if requirements.txt exists
+RUN if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 # Copy application code
 COPY . .
 
