@@ -81,15 +81,15 @@ if [ -d "/secrets" ]; then\n\
   mkdir -p /app/secrets\n\
   \n\
   # Copy Firebase service account key if it exists\n\
-  if [ -f "/secrets/firebase-service-account-key" ]; then\n\
-    cp /secrets/firebase-service-account-key /app/secrets/firebase-service-account.json\n\
+  if [ -f"/secrets/firebase/key"]; then\n\
+   cp /secrets/google/key /app/secrets/google-application-credentials.json\n\
     export FIREBASE_SERVICE_ACCOUNT_KEY="/app/secrets/firebase-service-account.json"\n\
     export SERVICE_ACCOUNT_KEY_PATH="/app/secrets/firebase-service-account.json"\n\
     echo "Firebase service account key configured: $FIREBASE_SERVICE_ACCOUNT_KEY"\n\
   fi\n\
   \n\
   # Copy Google application credentials if it exists\n\
-  if [ -f "/secrets/google-application-credentials" ]; then\n\
+  if [ -f "/secrets/google/key" ]; then\n\
     cp /secrets/google-application-credentials /app/secrets/google-application-credentials.json\n\
     export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/google-application-credentials.json"\n\
     echo "Google application credentials configured: $GOOGLE_APPLICATION_CREDENTIALS"\n\
