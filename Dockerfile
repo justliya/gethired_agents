@@ -33,6 +33,7 @@ RUN pip install --upgrade pip
 
 # Install Python dependencies if requirements.txt exists
 RUN if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
 # Copy application code
 COPY . .
 
@@ -50,6 +51,55 @@ echo "=== Container Startup ==="\n\
 echo "Time: $(date)"\n\
 echo "Working directory: $(pwd)"\n\
 echo "User: $(whoami)"\n\
+echo "PORT environment variable: ${PORT:-3000}"\n\
+\n\
+# Use PORT env var from Cloud Run for MCP\n\
+export PORT=${PORT:-3000}\n\
+export MCP_HTTP_PORT=${PORT}\n\
+export SPEAKER_PORT=8001\n\
+\n\
+# Cloud Run mounts secrets to /secrets/<secret-name>/\n\
+if [ -d "/secrets" ]; then\n\
+  echo "=== Setting up secrets ==="\n\
+  ls -la /secrets/\n\
+  \n\
+  # Create app secrets directory\n\
+  mkdir -p /app/secrets\n\
+  \n\
+  # Copy Firebase service account key if it exists\n\
+  if [ -f "/secrets/firebase/key" ]; then\n\
+    cp /secrets/firebase/key /app/secrets/firebase-service-account.json\n\
+    export FIREBASE_SERVICE_ACCOUNT_KEY="/app/secrets/firebase-service-account.json"\n\
+    export SERVICE_ACCOUNT_KEY_PATH="/app/secrets/firebase-service-account.json"\n\
+    echo "Firebase service account key configured"\n\
+  fi\n\
+  \n\
+  # Copy Google application credentials if it exists\n\
+  if [ -f "/secrets/google/key" ]; then\n\
+    cp /secrets/google/key /app/secrets/google-application-credentials.json\n\
+    export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/google-application-credentials.json"\n\
+    echo "Google application credentials configured"\n\
+  fi\n\
+  \n\
+  # If no separate Google creds, fall back to Firebase key\n\
+  if [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -f "/app/secrets/firebase-service-account.json" ]; then\n\
+    export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/firebase-service-account.json"\n\
+    echo "Using Firebase service account key as fallback for Google credentials"\n\
+  fi\n\
+else\n\
+  echo "=== No secrets directory found ==="\n\
+  echo "Using local files if available for development"\n\
+fi\n\
+\n\
+# Print environment info (without exposing secrets)\n\
+echo "=== Environment Configuration ==="\n\
+echo "PORT (for MCP): ${PORT}"\n\
+echo "MCP_HTTP_PORT: ${MCP_HTTP_PORT}"\n\
+echo "SPEAKER_PORT (coordinator): ${SPEAKER_PORT}"\n\
+echo "MCP_TRANSPORT: ${MCP_TRANSPORT:-http}"\n\
+echo "GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT"\n\
+echo "FIREBASE_STORAGE_BUCKET: $FIREBASE_STORAGE_BUCKET"\n\
+echo "GOOGLE_APPLICATION_CREDENTIALS set: $([ ! -z \"$GOOGLE_APPLICATION_CREDENTIALS\" ] && echo \"yes\" || echo \"no\")"\n\
 \n\
 # Function to wait for service\n\
 wait_for_service() {\n\
@@ -72,89 +122,14 @@ wait_for_service() {\n\
   return 1\n\
 }\n\
 \n\
-# Cloud Run mounts secrets to /secrets/<secret-name>/\n\
-if [ -d "/secrets" ]; then\n\
-  echo "=== Setting up secrets ==="\n\
-  ls -la /secrets/\n\
-  \n\
-  # Create app secrets directory\n\
-  mkdir -p /app/secrets\n\
-  \n\
-  # Copy Firebase service account key if it exists\n\
-  if [ -f"/secrets/firebase/key"]; then\n\
-   cp /secrets/google/key /app/secrets/google-application-credentials.json\n\
-    export FIREBASE_SERVICE_ACCOUNT_KEY="/app/secrets/firebase-service-account.json"\n\
-    export SERVICE_ACCOUNT_KEY_PATH="/app/secrets/firebase-service-account.json"\n\
-    echo "Firebase service account key configured: $FIREBASE_SERVICE_ACCOUNT_KEY"\n\
-  fi\n\
-  \n\
-  # Copy Google application credentials if it exists\n\
-  if [ -f "/secrets/google/key" ]; then\n\
-    cp /secrets/google-application-credentials /app/secrets/google-application-credentials.json\n\
-    export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/google-application-credentials.json"\n\
-    echo "Google application credentials configured: $GOOGLE_APPLICATION_CREDENTIALS"\n\
-  fi\n\
-  \n\
-  # If no separate Google creds, fall back to Firebase key (if that is appropriate for your use case)\n\
-  if [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -f "/app/secrets/firebase-service-account.json" ]; then\n\
-    export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/firebase-service-account.json"\n\
-    echo "Using Firebase service account key as fallback for Google credentials"\n\
-  fi\n\
-else\n\
-  echo "=== No secrets directory found ==="\n\
-  echo "Using local files if available for development"\n\
-  \n\
-  # Check for Firebase-specific credentials first\n\
-  if [ -f "/app/firebase-service-account.json" ]; then\n\
-    export FIREBASE_SERVICE_ACCOUNT_KEY="/app/firebase-service-account.json"\n\
-    export SERVICE_ACCOUNT_KEY_PATH="/app/firebase-service-account.json"\n\
-    echo "Using local Firebase service account key"\n\
-  elif [ -f "/app/serviceAccountKey.json" ]; then\n\
-    export FIREBASE_SERVICE_ACCOUNT_KEY="/app/serviceAccountKey.json"\n\
-    export SERVICE_ACCOUNT_KEY_PATH="/app/serviceAccountKey.json"\n\
-    echo "Using legacy local service account key for Firebase"\n\
-  fi\n\
-  \n\
-  # Check for Google Cloud credentials\n\
-  if [ -f "/app/google-application-credentials.json" ]; then\n\
-    export GOOGLE_APPLICATION_CREDENTIALS="/app/google-application-credentials.json"\n\
-    echo "Using local Google application credentials"\n\
-  elif [ -f "/app/serviceKey.json" ]; then\n\
-    export GOOGLE_APPLICATION_CREDENTIALS="/app/serviceKey.json"\n\
-    echo "Using local serviceKey.json for Google credentials"\n\
-  elif [ -f "/app/serviceAccountKey.json" ]; then\n\
-    export GOOGLE_APPLICATION_CREDENTIALS="/app/serviceAccountKey.json"\n\
-    echo "Fallback: Using serviceAccountKey.json for Google credentials"\n\
-  fi\n\
-fi\n\
-\n\
-# Print environment info (without exposing secrets)\n\
-echo "=== Environment Configuration ==="\n\
-echo "MCP_HTTP_PORT: ${MCP_HTTP_PORT:-3000}"\n\
-echo "MCP_TRANSPORT: ${MCP_TRANSPORT:-http}"\n\
-echo "GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT"\n\
-echo "FIREBASE_STORAGE_BUCKET: $FIREBASE_STORAGE_BUCKET"\n\
-echo "GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS"\n\
-echo "SERVICE_ACCOUNT_KEY_PATH: $SERVICE_ACCOUNT_KEY_PATH"\n\
-echo "FIREBASE_SERVICE_ACCOUNT_KEY: $FIREBASE_SERVICE_ACCOUNT_KEY"\n\
-\n\
-# Test Python configuration\n\
-echo "=== Testing Python Configuration ==="\n\
-python3 -c "import sys; print(f\"Python version: {sys.version}\")"\n\
-if python3 -c "import firebase_admin" 2>/dev/null; then\n\
-  echo "Firebase Admin SDK: ✓"\n\
-else\n\
-  echo "Firebase Admin SDK: ✗ (not installed)"\n\
-fi\n\
-\n\
-# Start Firebase MCP in background\n\
-echo "=== Starting Firebase MCP ==="\n\
-MCP_HTTP_PORT=${MCP_HTTP_PORT:-3000} MCP_TRANSPORT=${MCP_TRANSPORT:-http} npx @gannonh/firebase-mcp &\n\
+# Start Firebase MCP on the PORT that Cloud Run expects\n\
+echo "=== Starting Firebase MCP on port ${MCP_HTTP_PORT} ==="\n\
+MCP_HTTP_PORT=${MCP_HTTP_PORT} MCP_TRANSPORT=${MCP_TRANSPORT:-http} npx @gannonh/firebase-mcp &\n\
 MCP_PID=$!\n\
 echo "Firebase MCP started with PID: $MCP_PID"\n\
 \n\
 # Wait for MCP to be ready\n\
-if wait_for_service "http://localhost:${MCP_HTTP_PORT:-3000}/health" || wait_for_service "http://localhost:${MCP_HTTP_PORT:-3000}"; then\n\
+if wait_for_service "http://localhost:${MCP_HTTP_PORT}/health" || wait_for_service "http://localhost:${MCP_HTTP_PORT}"; then\n\
   echo "Firebase MCP is ready"\n\
 else\n\
   echo "Warning: Firebase MCP health check failed, but continuing..."\n\
@@ -167,29 +142,25 @@ cleanup() {\n\
     echo "Stopping Firebase MCP (PID: $MCP_PID)"\n\
     kill $MCP_PID 2>/dev/null || true\n\
   fi\n\
+  if [ ! -z "$COORDINATOR_PID" ]; then\n\
+    echo "Stopping Coordinator (PID: $COORDINATOR_PID)"\n\
+    kill $COORDINATOR_PID 2>/dev/null || true\n\
+  fi\n\
   exit 0\n\
 }\n\
 \n\
 # Set up signal handlers\n\
 trap cleanup SIGTERM SIGINT\n\
 \n\
-# Start coordinator\n\
-echo "=== Starting Coordinator ==="\n\
-python3 -m coordinator &\n\
+# Start coordinator on internal port 8001\n\
+echo "=== Starting Coordinator on port ${SPEAKER_PORT} ==="\n\
+python3 -m coordinator --port ${SPEAKER_PORT} --host 0.0.0.0 &\n\
 COORDINATOR_PID=$!\n\
 echo "Coordinator started with PID: $COORDINATOR_PID"\n\
 \n\
-# Wait for coordinator to finish\n\
-wait $COORDINATOR_PID\n\
-echo "Coordinator finished"\n\
-\n\
-# Cleanup\n\
-cleanup\n\
+# Keep the container running and forward signals\n\
+wait $MCP_PID $COORDINATOR_PID\n\
 ' > /app/start.sh && chmod +x /app/start.sh
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -f http://localhost:${MCP_HTTP_PORT:-3000}/health || exit 1
 
 # Start the application
 CMD ["/app/start.sh"]
