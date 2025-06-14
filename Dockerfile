@@ -7,7 +7,6 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-venv \
     curl \
-    nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -41,68 +40,91 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/secrets /tmp
 
-# Create nginx config
-RUN echo 'server {\n\
-    listen 3000;\n\
-    \n\
-    location /mcp {\n\
-        proxy_pass http://localhost:8001;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-        proxy_set_header Host $host;\n\
-        proxy_set_header X-Real-IP $remote_addr;\n\
-    }\n\
-    \n\
-    location / {\n\
-        proxy_pass http://localhost:8003;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Host $host;\n\
-        proxy_set_header X-Real-IP $remote_addr;\n\
-    }\n\
-}' > /etc/nginx/sites-available/default
-
 # Expose port
-EXPOSE 3000
+EXPOSE 8003
 
-# Create start script with nginx
+# Create improved start script with better error handling and logging
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
 echo "=== Container Startup ==="\n\
-echo "PORT: ${PORT:-3000}"\n\
+echo "Time: $(date)"\n\
+echo "Working directory: $(pwd)"\n\
+echo "User: $(whoami)"\n\
+echo "PORT environment variable: ${PORT:-8003}"\n\
 \n\
-# Setup secrets\n\
+# Use PORT env var from Cloud Run\n\
+export PORT=${PORT:-8003}\n\
+export SPEAKER_PORT=${PORT}\n\
+\n\
+# Cloud Run mounts secrets to /secrets/<secret-name>/\n\
 if [ -d "/secrets" ]; then\n\
+  echo "=== Setting up secrets ==="\n\
+  ls -la /secrets/\n\
+  \n\
+  # Create app secrets directory\n\
   mkdir -p /app/secrets\n\
-  [ -f "/secrets/firebase/key" ] && cp /secrets/firebase/key /app/secrets/firebase-service-account.json\n\
-  [ -f "/secrets/google/key" ] && cp /secrets/google/key /app/secrets/google-application-credentials.json\n\
+  \n\
+  # Copy Firebase service account key if it exists\n\
+  if [ -f "/secrets/firebase/key" ]; then\n\
+    cp /secrets/firebase/key /app/secrets/firebase-service-account.json\n\
+    export FIREBASE_SERVICE_ACCOUNT_KEY="/app/secrets/firebase-service-account.json"\n\
+    export SERVICE_ACCOUNT_KEY_PATH="/app/secrets/firebase-service-account.json"\n\
+    echo "Firebase service account key configured"\n\
+  fi\n\
+  \n\
+  # Copy Google application credentials if it exists\n\
+  if [ -f "/secrets/google/key" ]; then\n\
+    cp /secrets/google/key /app/secrets/google-application-credentials.json\n\
+    export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/google-application-credentials.json"\n\
+    echo "Google application credentials configured"\n\
+  fi\n\
+  \n\
+  # If no separate Google creds, fall back to Firebase key\n\
+  if [ -z "$GOOGLE_APPLICATION_CREDENTIALS" ] && [ -f "/app/secrets/firebase-service-account.json" ]; then\n\
+    export GOOGLE_APPLICATION_CREDENTIALS="/app/secrets/firebase-service-account.json"\n\
+    echo "Using Firebase service account key as fallback for Google credentials"\n\
+  fi\n\
+else\n\
+  echo "=== No secrets directory found ==="\n\
+  echo "Using local files if available for development"\n\
 fi\n\
 \n\
-export GOOGLE_APPLICATION_CREDENTIALS="${GOOGLE_APPLICATION_CREDENTIALS:-/app/secrets/firebase-service-account.json}"\n\
-export MCP_HTTP_PORT=8001\n\
-export SPEAKER_PORT=8003\n\
+# Print environment info (without exposing secrets)\n\
+echo "=== Environment Configuration ==="\n\
+echo "PORT: ${PORT}"\n\
+echo "SPEAKER_PORT: ${SPEAKER_PORT}"\n\
+echo "SPEAKER_HOST: ${SPEAKER_HOST:-0.0.0.0}"\n\
+echo "GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT"\n\
+echo "FIREBASE_STORAGE_BUCKET: $FIREBASE_STORAGE_BUCKET"\n\
+echo "GOOGLE_APPLICATION_CREDENTIALS set: $([ ! -z \"$GOOGLE_APPLICATION_CREDENTIALS\" ] && echo \"yes\" || echo \"no\")"\n\
 \n\
-# Update nginx to listen on PORT\n\
-sed -i "s/listen 3000;/listen ${PORT:-3000};/" /etc/nginx/sites-available/default\n\
-\n\
-# Start nginx\n\
-nginx -g "daemon off;" &\n\
-NGINX_PID=$!\n\
-\n\
-# Start MCP on internal port\n\
-MCP_HTTP_PORT=8001 npx @gannonh/firebase-mcp &\n\
+# Start Firebase MCP in the background\n\
+echo "=== Starting Firebase MCP ==="\n\
+npx @gannonh/firebase-mcp &\n\
 MCP_PID=$!\n\
+echo "Firebase MCP started with PID: $MCP_PID"\n\
 \n\
-# Start coordinator on internal port\n\
-python3 -m jobsearch_agents.coordinator --port 8003 --host 0.0.0.0 &\n\
-COORD_PID=$!\n\
+# Give MCP a moment to start\n\
+sleep 5\n\
 \n\
-# Wait for any process to exit\n\
-wait -n\n\
+# Function to cleanup background processes\n\
+cleanup() {\n\
+  echo "=== Cleanup ==="\n\
+  if [ ! -z "$MCP_PID" ]; then\n\
+    echo "Stopping Firebase MCP (PID: $MCP_PID)"\n\
+    kill $MCP_PID 2>/dev/null || true\n\
+  fi\n\
+  exit 0\n\
+}\n\
 \n\
-# Kill all processes if one dies\n\
-kill $NGINX_PID $MCP_PID $COORD_PID 2>/dev/null\n\
+# Set up signal handlers\n\
+trap cleanup SIGTERM SIGINT\n\
+\n\
+# Start coordinator\n\
+echo "=== Starting Job Search Agents Coordinator on port ${SPEAKER_PORT} ==="\n\
+exec python3 -m jobsearch_agents.coordinator --port ${SPEAKER_PORT} --host ${SPEAKER_HOST:-0.0.0.0}\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
+# Start the application
 CMD ["/app/start.sh"]
