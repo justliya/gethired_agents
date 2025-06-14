@@ -40,9 +40,6 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /app/secrets /tmp
 
-# Expose port
-EXPOSE 8003
-
 # Create improved start script with better error handling and logging
 RUN echo '#!/bin/bash\n\
 set -e\n\
@@ -51,16 +48,14 @@ echo "=== Container Startup ==="\n\
 echo "Time: $(date)"\n\
 echo "Working directory: $(pwd)"\n\
 echo "User: $(whoami)"\n\
-echo "PORT environment variable: ${PORT:-8003}"\n\
+echo "Cloud Run PORT: ${PORT}"\n\
 \n\
-# Use PORT env var from Cloud Run\n\
-export PORT=${PORT:-8003}\n\
-export SPEAKER_PORT=${PORT}\n\
+# Cloud Run sets PORT env var - we MUST listen on this port\n\
+export SPEAKER_PORT=${PORT:-8003}\n\
 \n\
 # Cloud Run mounts secrets to /secrets/<secret-name>/\n\
 if [ -d "/secrets" ]; then\n\
   echo "=== Setting up secrets ==="\n\
-  ls -la /secrets/\n\
   \n\
   # Create app secrets directory\n\
   mkdir -p /app/secrets\n\
@@ -92,8 +87,7 @@ fi\n\
 \n\
 # Print environment info (without exposing secrets)\n\
 echo "=== Environment Configuration ==="\n\
-echo "PORT: ${PORT}"\n\
-echo "SPEAKER_PORT: ${SPEAKER_PORT}"\n\
+echo "SPEAKER_PORT (listening on): ${SPEAKER_PORT}"\n\
 echo "SPEAKER_HOST: ${SPEAKER_HOST:-0.0.0.0}"\n\
 echo "GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT"\n\
 echo "FIREBASE_STORAGE_BUCKET: $FIREBASE_STORAGE_BUCKET"\n\
@@ -106,7 +100,7 @@ MCP_PID=$!\n\
 echo "Firebase MCP started with PID: $MCP_PID"\n\
 \n\
 # Give MCP a moment to start\n\
-sleep 5\n\
+sleep 3\n\
 \n\
 # Function to cleanup background processes\n\
 cleanup() {\n\
@@ -121,9 +115,9 @@ cleanup() {\n\
 # Set up signal handlers\n\
 trap cleanup SIGTERM SIGINT\n\
 \n\
-# Start coordinator\n\
+# Start coordinator - MUST listen on PORT env var\n\
 echo "=== Starting Job Search Agents Coordinator on port ${SPEAKER_PORT} ==="\n\
-exec python3 -m jobsearch_agents.coordinator --port ${SPEAKER_PORT} --host ${SPEAKER_HOST:-0.0.0.0}\n\
+exec python3 -m jobsearch_agents.coordinator --port ${SPEAKER_PORT} --host 0.0.0.0\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 
 # Start the application
