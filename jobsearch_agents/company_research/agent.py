@@ -4,10 +4,26 @@ from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
+from pydantic import BaseModel, HttpUrl
+from typing import List
+from datetime import date
 from contextlib import AsyncExitStack
 from . import prompt
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
+
+class JobListing(BaseModel):
+    listing_number: int  # integer 10
+    title: str
+    company: str
+    location: str  # e.g., "City, State"
+    salary: str  # e.g., "$X–$Y" or "Not specified"
+    date_posted: date  # format YYYY-MM-DD
+    description: str
+    qualifications: List[str]
+    benefits: List[str]
+    job_link: HttpUrl
+    easy_apply: bool
 
 async def create_agent():
     # Create exit stack first
@@ -16,7 +32,7 @@ async def create_agent():
     # MCPToolset is NOT awaitable - instantiate directly
     tools = MCPToolset(
         connection_params=StreamableHTTPServerParams(
-            url='https://gethired-mcp.onrender.com/jobsearch-mcp',
+            url='https://gethired-mcp.onrender.com/jobsearch-mcp/',
         ),
         tool_filter=[
             # Company Research Tools
@@ -42,7 +58,9 @@ async def create_agent():
         description="Perform extensive research on companies and provide comprehensive intelligence reports",
         instruction=prompt.COMPANY_RESEARCH_AGENT_PROMPT,
         model="gemini-2.0-flash-001",
-        tools=[tools],  # tools should be a list
+        tools=[tools],  
+        input_schema=JobListing,
+        output_key="company_research_report",
     )
     
     return agent_instance, exit_stack

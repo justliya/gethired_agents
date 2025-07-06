@@ -3,37 +3,38 @@ import os
 from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
-from google.adk.tools.mcp_tool.mcp_toolset import StreamableHTTPServerParams
-from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal
 from contextlib import AsyncExitStack
 from . import prompt
-from . import approval
+
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '..', '.env'))
 
-# Get MCP timeout from environment or use default (60 seconds)
-MCP_TIMEOUT = float(os.getenv("MCP_CLIENT_TIMEOUT", "60.0"))
-
-request_approval = Agent(
-    name="RequestHumanApproval",
-    instruction=(
-        "Invoke the LongRunningFunctionTool to send job listings for human review. "
-        "Wait for approval before proceeding."
-    ),
-    tools=[approval.approval_tool],
-    output_key="approval_response"
-)
+class Preferences(BaseModel):
+    location: str = Field(description="City, State or Country")
+    keywords: List[str] = Field(default_factory=list, description="Primary keywords to search for")
+    jobType: str = Field(description="Type of job (e.g., full-time, part-time, contract)")
+    excludeKeywords: List[str] = Field(default_factory=list, description="Keywords to exclude from search")
+    remote: Literal["yes", "no", "hybrid"] = Field(description="Remote work preference")
+    experienceLevel: Literal["entry", "mid", "senior"] = Field(description="Experience level")
+    salaryMin: Optional[float] = Field(default=None, description="Minimum desired salary")
+    salaryMax: Optional[float] = Field(default=None, description="Maximum desired salary")
+    skills: List[str] = Field(default_factory=list, description="Required or preferred skills")
+    titles: List[str] = Field(default_factory=list, description="Preferred job titles")
+    companies: List[str] = Field(default_factory=list, description="Target companies")
+    other: List[str] = Field(default_factory=list, description="Additional filters or preferences")
 
 async def create_agent():
     # Create exit stack first
     exit_stack = AsyncExitStack()
     
     # MCPToolset with proper timeout settings
-    tools = MCPToolset(
+    toolset = MCPToolset(
         connection_params=StreamableHTTPServerParams(
-            url='https://gethired-mcp.onrender.com/jobsearch-mcp',
-            timeout=MCP_TIMEOUT,  # Connection timeout
-            sse_read_timeout=MCP_TIMEOUT * 5  # SSE read timeout (5x connection timeout)
+            url='https://gethired-mcp.onrender.com/jobsearch-mcp/',
+          
         ),
         tool_filter=[
             'search_jobs',
@@ -45,8 +46,8 @@ async def create_agent():
     
     # Register cleanup callback
     async def cleanup():
-        if hasattr(tools, 'close'):
-            await tools.close()
+        if hasattr(toolset, 'close'):
+            await toolset.close()
     
     exit_stack.push_async_callback(cleanup)
     
@@ -55,11 +56,11 @@ async def create_agent():
         name="listing_search_agent",
         description=(
             "Search and retrieve job listings based on user preferences, "
-            "then allow human selection of listings for further research."
         ),
         instruction=prompt.LISTING_SEARCH_AGENT_PROMPT,
         model="gemini-2.0-flash-001",
-        tools=[tools, AgentTool(agent=request_approval, skip_summarization=True)],
+        output_key='job_listings',
+        tools=[toolset],
     )
     
     return agent_instance, exit_stack

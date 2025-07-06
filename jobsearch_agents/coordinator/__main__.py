@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """
-Initializes and starts the agent's server.
+Initializes and starts the Job Search AI Assistant server.
 """
-
 
 import os
 import sys
@@ -11,7 +10,7 @@ import argparse
 import uvicorn
 import asyncio
 import signal
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -23,7 +22,9 @@ from .agent import root_agent
 from common.a2a_server import create_agent_server
 
 # Constants
-default_timeout = 60.0
+DEFAULT_TIMEOUT = 300.0
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8080
 
 # Logging configuration
 logging.basicConfig(
@@ -33,18 +34,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global exit stack for proper cleanup
+global_exit_stack = None
+agent_instance = None
+
+@asynccontextmanager
+async def lifespan(app):
+    """Lifespan context manager for FastAPI app."""
+    # Startup
+    yield
+    # Shutdown - cleanup will be handled by main()
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Start the Speaker Agent server")
+    parser = argparse.ArgumentParser(description="Start the Job Search AI Assistant server")
     parser.add_argument(
         "--host",
         type=str,
-        default=os.getenv("SPEAKER_HOST", "0.0.0.0"),
+        default=os.getenv("JOB_SEARCH_HOST", DEFAULT_HOST),
         help="Host to bind the server to"
     )
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("SPEAKER_PORT", "8003")),
+        default=int(os.getenv("JOB_SEARCH_PORT", str(DEFAULT_PORT))),
         help="Port to bind the server to"
     )
     parser.add_argument(
@@ -56,32 +68,28 @@ def parse_args():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=float(os.getenv("SPEAKER_AGENT_TIMEOUT", default_timeout)),
+        default=float(os.getenv("JOB_SEARCH_TIMEOUT", str(DEFAULT_TIMEOUT))),
         help="Timeout for agent operations in seconds"
     )
     return parser.parse_args()
 
 async def main():
+    global global_exit_stack, agent_instance
+    
     args = parse_args()
 
     # Apply log level
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
-    logger.info("Starting Speaker Agent A2A Server initialization...")
+    logger.info("Starting Job Search AI Assistant Server initialization...")
     logger.info(f"Agent timeout set to: {args.timeout} seconds")
 
-    # Track running tasks for cleanup
-    running_tasks = set()
-    
-    def add_task(task):
-        running_tasks.add(task)
-        task.add_done_callback(running_tasks.discard)
+    # Track if we're shutting down
+    shutdown_event = asyncio.Event()
     
     # Signal handler for graceful shutdown
     def signal_handler():
-        logger.info("Received shutdown signal, cleaning up tasks...")
-        for task in running_tasks:
-            if not task.done():
-                task.cancel()
+        logger.info("Received shutdown signal...")
+        shutdown_event.set()
     
     # Set up signal handlers
     try:
@@ -95,67 +103,92 @@ async def main():
     try:
         # Instantiate agent and exit stack
         agent_instance, exit_stack = await root_agent
+        global_exit_stack = exit_stack
         logger.info(f"Agent instance created: {agent_instance.name}")
+        logger.info("Sub-agents loaded: profile analyzer, job searcher, company researcher")
 
-        async with exit_stack:
-            # Initialize TaskManager
-            try:
-                tm = TaskManager(agent=agent_instance, timeout=args.timeout)
-            except TypeError:
-                tm = TaskManager(agent=agent_instance)
-                if hasattr(tm, 'timeout'):
-                    tm.timeout = args.timeout
-            
-            # Determine bind address
-            host = args.host
-            port = int(os.getenv('PORT', args.port))
+        # Initialize TaskManager
+        tm = TaskManager(agent=agent_instance, timeout=args.timeout)
+        
+        # Determine bind address
+        host = args.host
+        port = int(os.getenv('PORT', args.port))
 
-            # Create FastAPI app (CORS is now handled in create_agent_server)
-            try:
-                app = create_agent_server(
-                    name=agent_instance.name,
-                    description=agent_instance.description,
-                    task_manager=tm,
-                    timeout=args.timeout
-                )
-            except TypeError:
-                app = create_agent_server(
-                    name=agent_instance.name,
-                    description=agent_instance.description,
-                    task_manager=tm
-                )
+        # Create FastAPI app with lifespan
+        from fastapi import FastAPI
+        app_base = create_agent_server(
+            name=agent_instance.name,
+            description=agent_instance.description,
+            task_manager=tm
+        )
+        
+        # Create a new FastAPI instance with lifespan management
+        app = FastAPI(
+            title=app_base.title,
+            description=app_base.description,
+            version=app_base.version,
+            lifespan=lifespan
+        )
+        
+        # Copy all routes from base app
+        for route in app_base.routes:
+            app.routes.append(route)
 
-            logger.info(f"Speaker Agent A2A server starting on {host}:{port}")
-            config = uvicorn.Config(app, host=host, port=port, log_level=args.log_level)
-            server = uvicorn.Server(config)
-            
-            # Start server as a task
-            server_task = asyncio.create_task(server.serve())
-            add_task(server_task)
-            
+        logger.info(f"Job Search AI Assistant server starting on {host}:{port}")
+        logger.info(f"API documentation available at http://{host}:{port}/docs")
+        logger.info(f"Main endpoint: POST http://{host}:{port}/run-job-search")
+        
+        config = uvicorn.Config(
+            app, 
+            host=host, 
+            port=port, 
+            log_level=args.log_level,
+            access_log=True,
+            loop="asyncio",
+            lifespan="on"
+        )
+        server = uvicorn.Server(config)
+        
+        # Run server in a task
+        server_task = asyncio.create_task(server.serve())
+        
+        # Wait for shutdown signal
+        await shutdown_event.wait()
+        
+        logger.info("Initiating graceful shutdown...")
+        
+        # Shutdown the server
+        server.should_exit = True
+        
+        # Wait for server to finish with timeout
+        try:
+            await asyncio.wait_for(server_task, timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("Server shutdown timed out")
+            server_task.cancel()
             try:
                 await server_task
             except asyncio.CancelledError:
-                logger.info("Server task was cancelled")
+                pass
                 
-    except asyncio.CancelledError:
-        logger.info("Main task was cancelled")
     except Exception as e:
         logger.error(f"Error during server execution: {e}", exc_info=True)
         raise
     finally:
-        # Clean up any remaining tasks
-        if running_tasks:
-            logger.info(f"Cleaning up {len(running_tasks)} remaining tasks...")
-            await asyncio.gather(*running_tasks, return_exceptions=True)
+        # Clean up the exit stack in the same task context
+        if global_exit_stack:
+            try:
+                logger.info("Cleaning up agent resources...")
+                await global_exit_stack.__aexit__(None, None, None)
+                logger.info("Agent cleanup completed")
+            except Exception as e:
+                logger.error(f"Error during agent cleanup: {e}", exc_info=True)
 
 if __name__ == "__main__":
     try:
-        if os.getenv("ASYNCIO_TIMEOUT"):
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Speaker Agent server stopped by user.")
+        logger.info("Job Search AI Assistant server stopped by user.")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Error during server startup: {e}", exc_info=True)
