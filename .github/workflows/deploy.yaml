@@ -10,6 +10,10 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: jobsearch_agents
+
 
     steps:
       - name: Checkout code
@@ -40,3 +44,5 @@ jobs:
         run: |
           chmod +x deploy.sh
           ./deploy.sh
+
+     
