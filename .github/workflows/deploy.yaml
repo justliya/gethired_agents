@@ -1,48 +1,77 @@
-name: Deploy Job Search Assistant to Cloud Run
+name: Deploy ADK Agents to Cloud Run
 
 on:
   push:
     paths:
       - 'jobsearch_agents/**'
-    branches:
-      - main
+      - '.github/workflows/deploy.yml'
+
+    branches: main
+
+  workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  deploy:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: jobsearch_agents
-
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Authenticate to Google Cloud
+      - id: auth
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+          export_environment_variables: true
+          cleanup_credentials: true
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
-          install_components: 'beta'
 
+      - name: Decode Firebase service account key
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT_B64" | base64 -d > "${GITHUB_WORKSPACE}/$SA_PATH"
+        env:
+          FIREBASE_SERVICE_ACCOUNT_B64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_B64 }}
+          SA_PATH: ${{ secrets.SA_FILE_PATH }}
+
+      - name: Build and Push Docker Image
+        working-directory: jobsearch_agents
+        run: |
+          # Build Docker image
+          IMAGE_NAME="gcr.io/$GOOGLE_CLOUD_PROJECT/job-search-assistant"
+          IMAGE_TAG="${{ github.sha }}"
+          
+          docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+          docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+          
+          # Configure docker to use gcloud credentials
+          gcloud auth configure-docker gcr.io -q
+          
+          # Push images to Google Container Registry
+          docker push ${IMAGE_NAME}:${IMAGE_TAG}
+          docker push ${IMAGE_NAME}:latest
+          
+          echo "IMAGE=${IMAGE_NAME}:${IMAGE_TAG}" >> $GITHUB_ENV
       - name: Deploy to Cloud Run
         env:
-          GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
-          GOOGLE_CLOUD_LOCATION: ${{ secrets.GOOGLE_CLOUD_LOCATION }}
-          FIREBASE_STORAGE_BUCKET: ${{ secrets.FIREBASE_STORAGE_BUCKET }}
-          SERVICE_ACCOUNT_KEY_PATH: ${{ secrets.SERVICE_ACCOUNT_KEY_PATH }}
+          SERVICE_NAME: 'job-search-assistant'
+          GOOGLE_CLOUD_LOCATION: 'us-central1'
+          FIREBASE_STORAGE_BUCKET: 'gethired-staging'
+          STAGING_BUCKET: 'gethired-staging'
         run: |
-          chmod +x deploy.sh
-          ./deploy.sh
-
-     
+          gcloud run deploy $SERVICE_NAME \
+            --project=$GOOGLE_CLOUD_PROJECT \
+            --region=$GOOGLE_CLOUD_LOCATION \
+            --image=$IMAGE \
+            --update-secrets=${{secrets.SA_PATH}}=firebase-service-account-key:latest \
+            --port=8080 \
+            --platform=managed \
+            --allow-unauthenticated \
+            --memory=5Gi \
+            --cpu=4.0 \
+            --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_LOCATION=$GOOGLE_CLOUD_LOCATION,STAGING_BUCKET=$STAGING_BUCKET,FIREBASE_STORAGE_BUCKET=$FIREBASE_STORAGE_BUCKET" \
+            --set-env-vars="FIREBASE_SERVICE_ACCOUNT_KEY=${{ secrets.SA_PATH }}" 
